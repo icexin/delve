@@ -197,6 +197,8 @@ type gdbRegisters struct {
 	buf      []byte
 	arch     *proc.Arch
 	regnames *gdbRegnames
+	regDec   func([]byte) uint64
+	regEnc   func([]byte, uint64)
 }
 
 type gdbRegister struct {
@@ -216,6 +218,14 @@ type gdbRegnames struct {
 // Detach.
 // Use Listen, Dial or Connect to complete connection.
 func newProcess(process *os.Process) *gdbProcess {
+	goos, goarch := "linux", "386" //os.Getenv("GOOS"), os.Getenv("GOARCH")
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+
 	logger := logflags.GdbWireLogger()
 	p := &gdbProcess{
 		conn: gdbConn{
@@ -225,7 +235,7 @@ func newProcess(process *os.Process) *gdbProcess {
 			log:                 logger,
 		},
 		threads:        make(map[int]*gdbThread),
-		bi:             proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
+		bi:             proc.NewBinaryInfo(goos, goarch),
 		regnames:       new(gdbRegnames),
 		breakpoints:    proc.NewBreakpointMap(),
 		gcmdok:         true,
@@ -253,6 +263,10 @@ func newProcess(process *os.Process) *gdbProcess {
 	case "amd64":
 		p.regnames.CX = "rcx"
 		p.regnames.FsBase = "fs_base"
+	case "386":
+		p.regnames.CX = "ecx"
+		p.regnames.FsBase = "gs_base"
+
 	default:
 		panic("not implemented")
 	}
@@ -593,6 +607,17 @@ func LLDBAttach(pid int, path string, debugInfoDirs []string) (*proc.Target, err
 		tgt, err = p.Dial(port, path, pid, debugInfoDirs, proc.StopAttached)
 	}
 	return tgt, err
+}
+
+// GDBStubAttach attach remote gdb stub.
+// Path is path to the target's executable, path only needs to be specified
+// for some stubs that do not provide an automated way of determining it
+// (for example debugserver).
+func GDBStubAttach(port int, path string, debugInfoDirs []string) (*proc.Target, error) {
+	p := newProcess(nil)
+
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	return p.Dial(addr, path, 0, debugInfoDirs, proc.StopAttached)
 }
 
 // EntryPoint will return the process entry point address, useful for
@@ -1528,6 +1553,21 @@ func (regs *gdbRegisters) init(regsInfo []gdbRegisterInfo, arch *proc.Arch, regn
 	regs.regs = make(map[string]gdbRegister)
 	regs.regsInfo = regsInfo
 
+	switch regs.arch.PtrSize() {
+	case 4:
+		regs.regDec = func(v []byte) uint64 {
+			return uint64(binary.LittleEndian.Uint32(v))
+		}
+		regs.regEnc = func(v []byte, x uint64) {
+			binary.LittleEndian.PutUint32(v, uint32(x))
+		}
+	case 8:
+		regs.regDec = binary.LittleEndian.Uint64
+		regs.regEnc = binary.BigEndian.PutUint64
+	default:
+		panic("unsupported ptr size " + strconv.Itoa(regs.arch.PtrSize()))
+	}
+
 	regsz := 0
 	for _, reginfo := range regsInfo {
 		if endoff := reginfo.Offset + (reginfo.Bitsize / 8); endoff > regsz {
@@ -1571,7 +1611,7 @@ func (t *gdbThread) reloadRegisters() error {
 	case "linux":
 		if reg, hasFsBase := t.regs.regs[t.p.regnames.FsBase]; hasFsBase {
 			t.regs.gaddr = 0
-			t.regs.tls = binary.LittleEndian.Uint64(reg.value)
+			t.regs.tls = t.regs.regDec(reg.value)
 			t.regs.hasgaddr = false
 			return nil
 		}
@@ -1792,27 +1832,27 @@ func (t *gdbThread) SetCurrentBreakpoint(adjustPC bool) error {
 }
 
 func (regs *gdbRegisters) PC() uint64 {
-	return binary.LittleEndian.Uint64(regs.regs[regs.regnames.PC].value)
+	return regs.regDec(regs.regs[regs.regnames.PC].value)
 }
 
 func (regs *gdbRegisters) setPC(value uint64) {
-	binary.LittleEndian.PutUint64(regs.regs[regs.regnames.PC].value, value)
+	regs.regEnc(regs.regs[regs.regnames.PC].value, value)
 }
 
 func (regs *gdbRegisters) SP() uint64 {
-	return binary.LittleEndian.Uint64(regs.regs[regs.regnames.SP].value)
+	return regs.regDec(regs.regs[regs.regnames.SP].value)
 }
 
 func (regs *gdbRegisters) BP() uint64 {
-	return binary.LittleEndian.Uint64(regs.regs[regs.regnames.BP].value)
+	return regs.regDec(regs.regs[regs.regnames.BP].value)
 }
 
 func (regs *gdbRegisters) CX() uint64 {
-	return binary.LittleEndian.Uint64(regs.regs[regs.regnames.CX].value)
+	return regs.regDec(regs.regs[regs.regnames.CX].value)
 }
 
 func (regs *gdbRegisters) setCX(value uint64) {
-	binary.LittleEndian.PutUint64(regs.regs[regs.regnames.CX].value, value)
+	regs.regEnc(regs.regs[regs.regnames.CX].value, value)
 }
 
 func (regs *gdbRegisters) TLS() uint64 {
@@ -1828,7 +1868,7 @@ func (regs *gdbRegisters) byName(name string) uint64 {
 	if !ok {
 		return 0
 	}
-	return binary.LittleEndian.Uint64(reg.value)
+	return regs.regDec(reg.value)
 }
 
 func (r *gdbRegisters) FloatLoadError() error {

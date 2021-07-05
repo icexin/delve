@@ -345,6 +345,8 @@ func (d *Debugger) Attach(pid int, path string) (*proc.Target, error) {
 		return native.Attach(pid, d.config.DebugInfoDirectories)
 	case "lldb":
 		return betterGdbserialLaunchError(gdbserial.LLDBAttach(pid, path, d.config.DebugInfoDirectories))
+	case "gdbstub":
+		return gdbserial.GDBStubAttach(pid, path, d.config.DebugInfoDirectories)
 	case "default":
 		if runtime.GOOS == "darwin" {
 			return betterGdbserialLaunchError(gdbserial.LLDBAttach(pid, path, d.config.DebugInfoDirectories))
