@@ -218,12 +218,12 @@ type gdbRegnames struct {
 // Detach.
 // Use Listen, Dial or Connect to complete connection.
 func newProcess(process *os.Process) *gdbProcess {
-	goos, goarch := "linux", "386" //os.Getenv("GOOS"), os.Getenv("GOARCH")
+	goos, goarch := os.Getenv("DLV_GOOS"), os.Getenv("DLV_GOARCH")
 	if goos == "" {
-		goos = runtime.GOOS
+		goos = "linux"
 	}
 	if goarch == "" {
-		goarch = runtime.GOARCH
+		goarch = "386"
 	}
 
 	logger := logflags.GdbWireLogger()
